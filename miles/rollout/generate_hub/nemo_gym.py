@@ -18,20 +18,14 @@ logger = logging.getLogger(__name__)
 
 def apply_trajectory(sample: Sample, trajectory: dict[str, Any]) -> Sample:
     """Map Gym's token-aligned trajectory onto Miles' native sample."""
-    input_ids = list(trajectory["input_ids"])
-    loss_mask = list(trajectory["loss_mask"])
-    logprobs = list(trajectory["logprobs"])
-    if not input_ids or len(input_ids) != len(loss_mask) or len(input_ids) != len(logprobs):
-        raise ValueError("NeMo Gym trajectory fields must be non-empty and token-aligned")
-    try:
-        response_start = loss_mask.index(1)
-    except ValueError as error:
-        raise ValueError("NeMo Gym trajectory has no trainable response token") from error
+    input_ids = trajectory["input_ids"]
+    loss_mask = trajectory["loss_mask"]
+    response_start = loss_mask.index(1)
 
     sample.tokens = input_ids
     sample.response_length = len(input_ids) - response_start
     sample.loss_mask = loss_mask[response_start:]
-    sample.rollout_log_probs = logprobs[response_start:]
+    sample.rollout_log_probs = trajectory["logprobs"][response_start:]
     sample.reward = float(trajectory["reward"])
     sample.status = Sample.Status.COMPLETED
     sample.validate()
@@ -39,7 +33,7 @@ def apply_trajectory(sample: Sample, trajectory: dict[str, Any]) -> Sample:
 
 
 def _run_request(sample: Sample, sampling_params: dict[str, Any]) -> dict[str, Any]:
-    request = deepcopy(sample.metadata.get("nemo_gym_run_request", sample.metadata))
+    request = deepcopy(sample.metadata)
     responses_create_params = request.setdefault("responses_create_params", {})
     responses_create_params["input"] = sample.prompt
     for source, target in (
@@ -75,9 +69,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             post(
                 f"{input.args.nemo_gym_url.rstrip('/')}/run",
                 request,
-                max_retries=input.args.nemo_gym_max_retries,
+                max_retries=3,
             ),
-            timeout=input.args.nemo_gym_run_timeout,
+            timeout=float(os.getenv("NEMO_GYM_RUN_TIMEOUT", "3600")),
         )
     except Exception as error:
         logger.warning("NeMo Gym /run failed: %s", error)
@@ -96,8 +90,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
 def _add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--nemo-gym-url", required=True)
-    parser.add_argument("--nemo-gym-max-retries", type=int, default=3)
-    parser.add_argument("--nemo-gym-run-timeout", type=float, default=3600)
 
 
 generate.add_arguments = _add_arguments

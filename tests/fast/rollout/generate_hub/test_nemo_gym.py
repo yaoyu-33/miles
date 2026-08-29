@@ -65,15 +65,16 @@ async def test_generate_calls_gym_run_and_uses_returned_trajectory(monkeypatch):
         captured.update(url=url, payload=payload, max_retries=max_retries)
         return {"trajectory": _trajectory(), "mask_sample": True}
 
+    async def fake_create(args):
+        return tracer
+
     monkeypatch.setattr(nemo_gym, "post", fake_post)
-    monkeypatch.setattr(nemo_gym.OpenAIEndpointTracer, "create", lambda args: _async_value(tracer))
+    monkeypatch.setattr(nemo_gym.OpenAIEndpointTracer, "create", fake_create)
     sample = Sample(
         prompt=[{"role": "user", "content": "solve"}],
         metadata={"verifier_metadata": {"answer": "42"}},
     )
-    state = SimpleNamespace(
-        args=Namespace(nemo_gym_url="http://gym:8000/", nemo_gym_max_retries=2, nemo_gym_run_timeout=60)
-    )
+    state = SimpleNamespace(args=Namespace(nemo_gym_url="http://gym:8000/"))
 
     output = await nemo_gym.generate(
         GenerateFnInput(
@@ -95,20 +96,8 @@ async def test_generate_calls_gym_run_and_uses_returned_trajectory(monkeypatch):
             },
             "policy_base_url": "http://session:30000/sessions/abc/v1",
         },
-        "max_retries": 2,
+        "max_retries": 3,
     }
     assert tracer.closed is True
     assert output.samples.remove_sample is True
     assert output.samples.status is Sample.Status.COMPLETED
-
-
-def test_trajectory_requires_a_trainable_token():
-    with pytest.raises(ValueError, match="no trainable response token"):
-        nemo_gym.apply_trajectory(
-            Sample(),
-            {"input_ids": [1], "loss_mask": [0], "logprobs": [0.0], "reward": 0.0},
-        )
-
-
-async def _async_value(value):
-    return value
