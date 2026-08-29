@@ -11,6 +11,8 @@ either supply (file path or worker env), and treat a partially-supplied
 credential (Modal's token pair) as missing rather than usable.
 """
 
+import sys
+
 import openenv_launch_common as launch
 import openenv_sandbox_common as common
 import pytest
@@ -27,6 +29,8 @@ _SPEC_KEYS = {
     "forward",
     "target",
 }
+# Per-backend extras a spec may carry; the launcher reads them with .get().
+_OPTIONAL_SPEC_KEYS = {"sdk_min_version"}
 
 
 # --- the credential table ---------------------------------------------------
@@ -41,7 +45,7 @@ def test_every_backend_has_a_credential_spec():
 @pytest.mark.parametrize("backend", sorted(launch._PROVIDER_CREDENTIALS))
 def test_credential_spec_is_complete(backend):
     spec = launch._PROVIDER_CREDENTIALS[backend]
-    assert set(spec) == _SPEC_KEYS, backend
+    assert _SPEC_KEYS <= set(spec) <= _SPEC_KEYS | _OPTIONAL_SPEC_KEYS, backend
     assert spec["key_env_vars"], backend
     # The arg the launcher reads must be declared on the shared config Protocol,
     # else a launcher can never override the path.
@@ -144,3 +148,22 @@ def test_missing_credential_names_what_to_provision(monkeypatch, tmp_path):
     monkeypatch.delenv("E2B_API_KEY", raising=False)
     with pytest.raises(ValueError, match="mkdir -p ~/.config/e2b"):
         _supply({}, "e2b", default_path=str(tmp_path / "absent"))
+
+
+def test_preflight_sdk_enforces_min_version(monkeypatch):
+    import types
+
+    monkeypatch.setitem(sys.modules, "fakesdk", types.ModuleType("fakesdk"))
+    monkeypatch.setattr(launch.importlib.metadata, "version", lambda name: "2.11.0")
+    with pytest.raises(RuntimeError, match=r"fakesdk>=2\.12 \(installed: 2\.11\.0\)"):
+        launch._preflight_sdk("fakesdk", "pip install fakesdk", "2.12")
+    monkeypatch.setattr(launch.importlib.metadata, "version", lambda name: "2.46.0")
+    launch._preflight_sdk("fakesdk", "pip install fakesdk", "2.12")  # no error
+    launch._preflight_sdk("fakesdk", "pip install fakesdk")  # no floor, no check
+
+
+def test_version_tuple_reads_leading_numbers():
+    assert launch._version_tuple("2.12") == (2, 12)
+    assert launch._version_tuple("2.46.0") == (2, 46, 0)
+    assert launch._version_tuple("2.12.0rc1") == (2, 12, 0)
+    assert launch._version_tuple("2.12") < launch._version_tuple("2.46.0")

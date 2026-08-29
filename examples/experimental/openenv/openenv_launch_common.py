@@ -10,6 +10,7 @@ perf/sglang/misc profile and its ``ScriptArgs`` defaults.
 """
 
 import importlib
+import importlib.metadata
 import os
 import subprocess
 import time
@@ -206,7 +207,7 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
             default_path=spec["default_path"],
             provision_hint=spec["provision_hint"],
         )
-        _preflight_sdk(spec["sdk"], spec["sdk_hint"])
+        _preflight_sdk(spec["sdk"], spec["sdk_hint"], spec.get("sdk_min_version"))
         # Addresses, not secrets: the SDK reads these from the environment on
         # every worker, so forward whatever is set here BY VALUE.
         for var in spec["forward"]:
@@ -273,7 +274,10 @@ _PROVIDER_CREDENTIALS = {
         "provision_hint": "mkdir -p ~/.config/e2b && echo <key> > ~/.config/e2b/api_key"
         "  # AgentENV accepts any non-empty key today",
         "sdk": "e2b",
-        "sdk_hint": "pip install e2b",
+        "sdk_hint": "pip install -e '<miles>[e2b]'",
+        # Older releases send the template name as `alias`, which self-hosted
+        # AgentENV does not read; the failure is a bare 400 at the first bake.
+        "sdk_min_version": "2.12",
         # E2B_API_URL unset means E2B Cloud; set, it usually points at a
         # self-hosted AgentENV deployment.
         "forward": ("E2B_API_URL", "E2B_SANDBOX_URL", "E2B_DOMAIN", "OPENENV_E2B_URL_SCHEME"),
@@ -373,14 +377,39 @@ def _sandbox_key_supply(
         )
 
 
-def _preflight_sdk(module: str, install_hint: str) -> None:
+def _preflight_sdk(module: str, install_hint: str, min_version: str | None = None) -> None:
     """Preflight the lazily-imported provider SDK. Without this, a missing
     install only surfaces inside each episode's sandbox start, where the
     failed sample is aborted, the group dropped, and the rollout loop refills
-    forever — a silent GPU-burning churn instead of a launch-time error."""
+    forever — a silent GPU-burning churn instead of a launch-time error.
+    *min_version*, when given, is the floor the extra in setup.py declares;
+    checking it here catches an SDK installed by hand or preinstalled in an
+    image, whose failure mode would otherwise be a provider error with no hint
+    that the version is the cause."""
     try:
         importlib.import_module(module)
     except ImportError as e:
         raise RuntimeError(
             f"this sandbox mode needs the {module} SDK in the rollout process's environment: {install_hint}"
         ) from e
+    if min_version is None:
+        return
+    installed = importlib.metadata.version(module)
+    if _version_tuple(installed) < _version_tuple(min_version):
+        raise RuntimeError(f"this sandbox mode needs {module}>={min_version} (installed: {installed}): {install_hint}")
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """Numeric leading components of a version string, enough to compare
+    release floors like 2.12 against 2.46.0 or 2.12.0rc1."""
+    parts = []
+    for piece in version.split("."):
+        digits = ""
+        for ch in piece:
+            if not ch.isdigit():
+                break
+            digits += ch
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
