@@ -83,12 +83,16 @@ class OpenAIEndpointTracer:
                 timeout=_SESSION_REQUEST_TIMEOUT,
             )
         finally:
-            try:
-                await asyncio.wait_for(
-                    post(self.base_url, {}, action="delete"),
-                    timeout=_SESSION_REQUEST_TIMEOUT,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to delete session {self.session_id} after collecting samples: {e}")
+            await self.close()
 
         return decode_samples_and_merge_input_sample(payload, input_sample, fields=self.samples_wire_fields)
+
+    async def close(self) -> None:
+        """Delete the server-side session without materializing Miles samples."""
+        try:
+            await asyncio.wait_for(
+                post(self.base_url, {}, action="delete"),
+                timeout=_SESSION_REQUEST_TIMEOUT,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to delete session {self.session_id}: {e}")

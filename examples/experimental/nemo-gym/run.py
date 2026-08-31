@@ -15,14 +15,11 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 import typer
 
 import miles.utils.external_utils.command_utils as U
-
-SCRIPT_DIR = Path(__file__).resolve().parent
 
 
 @dataclass
@@ -141,9 +138,8 @@ def execute(args: ScriptArgs):
     sglang_args = "--rollout-num-gpus-per-engine 1 --sglang-mem-fraction-static 0.7 "
 
     agent_args = (
-        "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
-        "--custom-agent-function-path nemogym_agent_function.run "
-        "--custom-rm-path nemogym_generate.reward_func "
+        "--custom-generate-function-path miles.rollout.generate_hub.nemo_gym.generate "
+        f"--nemo-gym-url {args.nemo_gym_url} "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         "--use-session-server "
         # 0.0.0.0 so the NeMo Gym host can dial in on any interface (e.g. a
@@ -180,8 +176,7 @@ def execute(args: ScriptArgs):
     )
 
     extra_env_vars = {
-        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{U.repo_base_dir}",
-        "NEMO_GYM_URL": args.nemo_gym_url,
+        "PYTHONPATH": f"{args.megatron_path}:{U.repo_base_dir}",
     }
     if args.router_external_host:
         extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
