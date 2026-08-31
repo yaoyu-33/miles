@@ -16,7 +16,11 @@ from miles.utils.types import Sample
 logger = logging.getLogger(__name__)
 
 
-def apply_trajectory(sample: Sample, trajectory: dict[str, Any]) -> Sample:
+def apply_trajectory(
+    sample: Sample,
+    trajectory: dict[str, Any],
+    max_response_length: int | None = None,
+) -> Sample:
     """Map Gym's token-aligned trajectory onto Miles' native sample."""
     input_ids = trajectory["input_ids"]
     loss_mask = trajectory["loss_mask"]
@@ -27,7 +31,8 @@ def apply_trajectory(sample: Sample, trajectory: dict[str, Any]) -> Sample:
     sample.loss_mask = loss_mask[response_start:]
     sample.rollout_log_probs = trajectory["logprobs"][response_start:]
     sample.reward = float(trajectory["reward"])
-    sample.status = Sample.Status.COMPLETED
+    reached_limit = max_response_length is not None and sample.response_length >= max_response_length
+    sample.status = Sample.Status.TRUNCATED if reached_limit else Sample.Status.COMPLETED
     sample.validate()
     return sample
 
@@ -46,9 +51,10 @@ def _run_request(sample: Sample, sampling_params: dict[str, Any]) -> dict[str, A
     return request
 
 
-def _policy_base_url(session_base_url: str) -> str:
+def _policy_base_url(session_base_url: str, external_host: str | None = None) -> str:
     policy_base_url = f"{session_base_url}/v1"
-    if external_host := os.getenv("MILES_ROUTER_EXTERNAL_HOST"):
+    external_host = external_host or os.getenv("MILES_ROUTER_EXTERNAL_HOST")
+    if external_host:
         parsed = urlparse(policy_base_url)
         netloc = f"{external_host}:{parsed.port}" if parsed.port else external_host
         policy_base_url = urlunparse(parsed._replace(netloc=netloc))
@@ -63,7 +69,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     tracer = await OpenAIEndpointTracer.create(input.args)
     request = _run_request(sample, input.sampling_params)
-    request["policy_base_url"] = _policy_base_url(tracer.base_url)
+    request["policy_base_url"] = _policy_base_url(
+        tracer.base_url,
+        getattr(input.args, "nemo_gym_router_external_host", None),
+    )
     try:
         result = await asyncio.wait_for(
             post(
@@ -85,11 +94,18 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         raise ValueError("NeMo Gym /run response did not include trajectory")
     sample.remove_sample = bool(result.get("mask_sample", False))
     sample.metadata["eval_report"] = result.get("metadata", {}) or {}
-    return GenerateFnOutput(samples=apply_trajectory(sample, trajectory))
+    return GenerateFnOutput(
+        samples=apply_trajectory(
+            sample,
+            trajectory,
+            max_response_length=input.sampling_params.get("max_new_tokens"),
+        )
+    )
 
 
 def _add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--nemo-gym-url", required=True)
+    parser.add_argument("--nemo-gym-router-external-host")
 
 
 generate.add_arguments = _add_arguments

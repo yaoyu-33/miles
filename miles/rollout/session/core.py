@@ -241,6 +241,27 @@ def extract_completion(result: dict) -> tuple:
     return response, choice, assistant_message, completion_token_ids
 
 
+def expose_token_id_information(
+    request_body: dict,
+    response: dict,
+    choice: dict,
+    prompt_token_ids: list[int],
+    completion_token_ids: list[int],
+) -> None:
+    """Expose exact session tokens through the requested OpenAI extensions."""
+    if request_body.get("return_token_ids"):
+        response["prompt_token_ids"] = prompt_token_ids
+        choice["token_ids"] = completion_token_ids
+
+    if not request_body.get("return_tokens_as_token_ids"):
+        return
+    content = (choice.get("logprobs") or {}).get("content")
+    if not isinstance(content, list) or len(content) != len(completion_token_ids):
+        raise UpstreamResponseError("logprobs.content must align with output_token_logprobs")
+    for entry, token_id in zip(content, completion_token_ids, strict=True):
+        entry["token"] = f"token_id:{token_id}"
+
+
 class SessionCore:
     """HTTP session operations over one ``SessionRegistry``."""
 
@@ -405,7 +426,14 @@ class SessionCore:
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
 
-        response, _, assistant_message, completion_token_ids = extract_completion(result)
+        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        expose_token_id_information(
+            request_body,
+            response,
+            choice,
+            prompt_token_ids,
+            completion_token_ids,
+        )
 
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:

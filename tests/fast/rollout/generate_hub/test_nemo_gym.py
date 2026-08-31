@@ -10,6 +10,7 @@ import pytest
 from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.generate_hub import nemo_gym
+from miles.rollout.session.core import expose_token_id_information
 from miles.utils.types import Sample
 
 
@@ -20,6 +21,18 @@ def _trajectory():
         "logprobs": [0.0, 0.0, -0.1, 0.0, -0.2],
         "reward": 0.75,
     }
+
+
+def test_session_exposes_exact_token_ids_when_requested():
+    request = {"return_token_ids": True, "return_tokens_as_token_ids": True}
+    choice = {"logprobs": {"content": [{"token": "one"}, {"token": "two"}]}}
+    response = {"choices": [choice]}
+
+    expose_token_id_information(request, response, choice, [10, 11], [12, 13])
+
+    assert response["prompt_token_ids"] == [10, 11]
+    assert choice["token_ids"] == [12, 13]
+    assert choice["logprobs"]["content"] == [{"token": "token_id:12"}, {"token": "token_id:13"}]
 
 
 def test_trajectory_flows_into_native_train_data():
@@ -48,6 +61,12 @@ def test_trajectory_flows_into_native_train_data():
     assert train_data["rewards"] == [0.75]
 
 
+def test_trajectory_preserves_length_truncation_status():
+    sample = nemo_gym.apply_trajectory(Sample(index=7), _trajectory(), max_response_length=3)
+
+    assert sample.status is Sample.Status.TRUNCATED
+
+
 @pytest.mark.asyncio
 async def test_generate_calls_gym_run_and_uses_returned_trajectory(monkeypatch):
     captured = {}
@@ -74,7 +93,12 @@ async def test_generate_calls_gym_run_and_uses_returned_trajectory(monkeypatch):
         prompt=[{"role": "user", "content": "solve"}],
         metadata={"verifier_metadata": {"answer": "42"}},
     )
-    state = SimpleNamespace(args=Namespace(nemo_gym_url="http://gym:8000/"))
+    state = SimpleNamespace(
+        args=Namespace(
+            nemo_gym_url="http://gym:8000/",
+            nemo_gym_router_external_host="worker.example",
+        )
+    )
 
     output = await nemo_gym.generate(
         GenerateFnInput(
@@ -94,7 +118,7 @@ async def test_generate_calls_gym_run_and_uses_returned_trajectory(monkeypatch):
                 "temperature": 0.7,
                 "max_output_tokens": 64,
             },
-            "policy_base_url": "http://session:30000/sessions/abc/v1",
+            "policy_base_url": "http://worker.example:30000/sessions/abc/v1",
         },
         "max_retries": 3,
     }
